@@ -85,14 +85,17 @@ impl Memory {
         }
     }
 
-    pub fn find_shortest_path(&self) -> (usize, Vec<Vec<Coord2D>>) {
+    pub fn find_shortest_path(&self) -> (Option<usize>, Vec<Vec<Coord2D>>) {
         let coord = Coord2D::new(0, 0);
         let mut visited = HashMap::new();
         let mut path = Vec::new();
         let mut paths = Vec::new();
         self.shortest_path_dfs(coord, &mut visited, &mut path, &mut paths);
-        let len = paths.iter().map(|v| v.len()).min().unwrap_or(0);
-        (len, paths)
+        if paths.is_empty() {
+            return (None, paths);
+        }
+        let len = paths.iter().map(|v| v.len()).min().unwrap();
+        (Some(len), paths)
     }
 
     pub fn shortest_path_dfs(
@@ -189,17 +192,26 @@ fn main() {
         corrupted.push(Coord2D::new(numbers[0], numbers[1]));
     }
 
-    let memory = match INPUT {
+    let x_dim;
+    let y_dim;
+    let mut corruption_idx;
+    match INPUT {
         Input::Example => {
-            let corrupted_set = corrupted[0..12].iter().cloned().collect();
-            Memory::new(7, 7, corrupted_set)
+            x_dim = 7;
+            y_dim = 7;
+            corruption_idx = 12;
         }
         Input::Default => {
-            let corrupted_set: HashSet<Coord2D> = corrupted[0..1024].iter().cloned().collect();
-            Memory::new(71, 71, corrupted_set)
+            x_dim = 71;
+            y_dim = 71;
+            corruption_idx = 1024;
         }
     };
+    let corrupted_set: HashSet<Coord2D> = corrupted[0..corruption_idx].iter().cloned().collect();
+    let memory = Memory::new(x_dim, y_dim, corrupted_set);
     let (path_len, shortest_paths) = memory.find_shortest_path();
+    let path_len = path_len.unwrap();
+    println!("elapsed (p1): {}ms", start.elapsed().as_millis());
     println!("Steps for shortest path: {:?}", path_len - 1);
     if DEBUG {
         println!("Shortest path: {:?}", shortest_paths);
@@ -208,5 +220,20 @@ fn main() {
         Input::Example => assert_eq!(path_len - 1, 22),
         Input::Default => assert_eq!(path_len - 1, 278),
     }
-    println!("elapsed: {}ms", start.elapsed().as_millis());
+    corruption_idx += 1;
+    loop {
+        let corrupted_set: HashSet<Coord2D> =
+            corrupted[0..corruption_idx].iter().cloned().collect();
+        let next_memory = Memory::new(x_dim, y_dim, corrupted_set);
+        let (path_len, _) = next_memory.find_shortest_path();
+        if path_len.is_none() {
+            println!("elapsed (p2): {}ms", start.elapsed().as_millis());
+            println!(
+                "corruption index {} with value {:?}",
+                corruption_idx, corrupted[corruption_idx - 1]
+            );
+            break;
+        }
+        corruption_idx += 1;
+    }
 }
