@@ -228,9 +228,11 @@ fn main() {
         let (path_len, _) = next_memory.find_shortest_path();
         if path_len.is_none() {
             println!("elapsed (p2): {}ms", start.elapsed().as_millis());
+            assert_eq!(corruption_idx, 2991);
             println!(
                 "corruption index {} with value {:?}",
-                corruption_idx, corrupted[corruption_idx - 1]
+                corruption_idx,
+                corrupted[corruption_idx - 1]
             );
             break;
         }
