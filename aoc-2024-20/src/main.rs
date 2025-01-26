@@ -10,7 +10,6 @@ pub enum Input {
     Default,
 }
 
-const INPUT: Input = Input::Default;
 const DEBUG: bool = false;
 
 #[derive(Debug, Copy, Clone)]
@@ -120,30 +119,26 @@ impl Racetrack {
     pub fn try_all_cheat_combinations(&self) -> HashMap<usize, u32> {
         let walls_snapshot = self.walls.borrow().clone();
         let mut picosecond_with_cheats = HashMap::new();
-        for wall in walls_snapshot {
-            let north = Coord2D::new(wall.x - 1, wall.y);
-            let south = Coord2D::new(wall.x + 1, wall.y);
-            let west = Coord2D::new(wall.x, wall.y - 1);
-            let east = Coord2D::new(wall.x, wall.y + 1);
-            let wall_borrow = self.walls.borrow();
-            // Skip invalid wallhack locations.
-            if (wall.x != 0
-                && wall.x != self.x_dim - 1
-                && wall_borrow.contains(&north)
-                && wall_borrow.contains(&south))
-                && (wall.y != 0
-                    && wall.y != self.y_dim - 1
-                    && wall_borrow.contains(&west)
-                    && wall_borrow.contains(&east))
-            {
-                continue;
+        for wall in &walls_snapshot {
+            if wall.x > 0 && wall.x < self.x_dim - 1 {
+                let north = Coord2D::new(wall.x - 1, wall.y);
+                let south = Coord2D::new(wall.x + 1, wall.y);
+                if !walls_snapshot.contains(&north) && !walls_snapshot.contains(&south) {
+                    let (picoseconds, _) = self.find_shortest_path_with_cheat(*wall);
+                    *picosecond_with_cheats.entry(picoseconds).or_insert(0_u32) += 1;
+                }
             }
-            drop(wall_borrow);
+            if wall.y > 0 && wall.y < self.y_dim - 1 {
+                let west = Coord2D::new(wall.x, wall.y - 1);
+                let east = Coord2D::new(wall.x, wall.y + 1);
+                if !walls_snapshot.contains(&east) && !walls_snapshot.contains(&west) {
+                    let (picoseconds, _) = self.find_shortest_path_with_cheat(*wall);
+                    *picosecond_with_cheats.entry(picoseconds).or_insert(0_u32) += 1;
+                }
+            }
             if DEBUG {
                 println!("cheating with wall: {:?}", wall);
             }
-            let (picoseconds, _) = self.find_shortest_path_with_cheat(wall);
-            *picosecond_with_cheats.entry(picoseconds).or_insert(0_u32) += 1;
         }
         picosecond_with_cheats
     }
@@ -261,11 +256,7 @@ impl Racetrack {
 
 fn main() {
     let start = std::time::Instant::now();
-    let filename = match INPUT {
-        Input::Example => "example.txt",
-        Input::Default => "input.txt",
-    };
-    let input_file = std::fs::read(filename).unwrap();
+    let input_file = std::fs::read("input.txt").unwrap();
     let racetrack = Racetrack::new_from_data(&input_file);
     if DEBUG {
         println!("Racetrack: {:?}", racetrack);
@@ -280,31 +271,42 @@ fn main() {
     println!("elapsed: {}ms", start.elapsed().as_millis());
     println!("Picoseconds default: {}", picoseconds_no_cheats);
     println!("Saved picoseconds {:?}", saved_times);
-    match INPUT {
-        Input::Example => {
-            assert_eq!(racetrack.x_dim, 13);
-            assert_eq!(racetrack.y_dim, 13);
-            assert_eq!(racetrack.start, Coord2D::new(2, 0));
-            assert_eq!(racetrack.end, Coord2D::new(6, 4));
-            assert_eq!(*saved_times.get(&64).unwrap(), 1);
-            assert_eq!(*saved_times.get(&40).unwrap(), 1);
-            assert_eq!(*saved_times.get(&38).unwrap(), 1);
-            assert_eq!(*saved_times.get(&20).unwrap(), 1);
-            assert_eq!(*saved_times.get(&12).unwrap(), 3);
-            assert_eq!(*saved_times.get(&10).unwrap(), 2);
-            assert_eq!(*saved_times.get(&8).unwrap(), 4);
-            assert_eq!(*saved_times.get(&6).unwrap(), 2);
-            assert_eq!(*saved_times.get(&4).unwrap(), 14);
-            assert_eq!(*saved_times.get(&2).unwrap(), 14);
+    let mut cheats_saving_100ps = 0;
+    for (saved_time, num) in saved_times {
+        if saved_time >= 100 {
+            cheats_saving_100ps += num;
         }
-        Input::Default => {
-            let mut cheats_saving_100ps = 0;
-            for (saved_time, num) in saved_times {
-                if saved_time >= 100 {
-                    cheats_saving_100ps += num;
-                }
-            }
-            println!("solution p1: {}", cheats_saving_100ps);
-        },
+    }
+    println!("solution p1: {}", cheats_saving_100ps);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_example() {
+        let input_file = std::fs::read("example.txt").unwrap();
+        let racetrack = Racetrack::new_from_data(&input_file);
+        let (picoseconds_no_cheats, _) = racetrack.find_shortest_path();
+        let picosecond_with_cheats = racetrack.try_all_cheat_combinations();
+        let saved_times: HashMap<usize, u32> = picosecond_with_cheats
+            .iter()
+            .filter(|(picoseconds, _)| **picoseconds < picoseconds_no_cheats)
+            .map(|(picoseconds, times)| (picoseconds_no_cheats - *picoseconds, *times))
+            .collect();
+        assert_eq!(racetrack.x_dim, 13);
+        assert_eq!(racetrack.y_dim, 13);
+        assert_eq!(racetrack.start, Coord2D::new(2, 0));
+        assert_eq!(racetrack.end, Coord2D::new(6, 4));
+        assert_eq!(*saved_times.get(&64).unwrap(), 1);
+        assert_eq!(*saved_times.get(&40).unwrap(), 1);
+        assert_eq!(*saved_times.get(&38).unwrap(), 1);
+        assert_eq!(*saved_times.get(&20).unwrap(), 1);
+        assert_eq!(*saved_times.get(&12).unwrap(), 3);
+        assert_eq!(*saved_times.get(&10).unwrap(), 2);
+        assert_eq!(*saved_times.get(&8).unwrap(), 4);
+        assert_eq!(*saved_times.get(&6).unwrap(), 2);
+        assert_eq!(*saved_times.get(&4).unwrap(), 14);
+        assert_eq!(*saved_times.get(&2).unwrap(), 14);
     }
 }
