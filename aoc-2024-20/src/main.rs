@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    cmp::min,
     collections::{HashMap, HashSet},
     io::BufRead,
 };
@@ -12,7 +13,7 @@ pub enum Input {
 
 const DEBUG: bool = false;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Direction {
     Up,
     Down,
@@ -116,15 +117,24 @@ impl Racetrack {
         }
     }
 
-    pub fn find_shortest_path_with_dynamic_programming(&self) -> HashMap<Coord2D, usize> {
+    pub fn find_shortest_path_with_dynamic_programming(
+        &self,
+        start: Coord2D,
+    ) -> HashMap<Coord2D, usize> {
         let mut visited: HashMap<Coord2D, usize> = HashMap::new();
-        let mut check_vec = vec![(self.start, 0)];
-        visited.insert(self.start, 0);
+
+        let mut check_vec = self.check_next_tile(&mut visited, 0, start, None);
+        visited.insert(start, 0);
 
         let mut next_to_check = Vec::new();
         loop {
-            for (coord, cost) in check_vec.drain(..) {
-                next_to_check.extend(self.check_next_tile(&mut visited, cost, coord));
+            for (coord, cost, last_dir) in check_vec.drain(..) {
+                next_to_check.extend(self.check_next_tile(
+                    &mut visited,
+                    cost,
+                    coord,
+                    Some(last_dir),
+                ));
             }
             if next_to_check.is_empty() {
                 break;
@@ -142,12 +152,25 @@ impl Racetrack {
         init_check_points: Vec<(Coord2D, usize)>,
         mut visited: HashMap<Coord2D, usize>,
     ) -> usize {
-        let mut check_vec = init_check_points;
+        let mut check_vec = Vec::new();
+        for check_point in init_check_points {
+            check_vec.extend(self.check_next_tile(
+                &mut visited,
+                check_point.1,
+                check_point.0,
+                None,
+            ));
+        }
 
         let mut next_to_check = Vec::with_capacity(self.x_dim * self.y_dim);
         loop {
-            for (coord, cost) in check_vec.drain(..) {
-                next_to_check.extend(self.check_next_tile(&mut visited, cost, coord));
+            for (coord, cost, last_dir) in check_vec.drain(..) {
+                next_to_check.extend(self.check_next_tile(
+                    &mut visited,
+                    cost,
+                    coord,
+                    Some(last_dir),
+                ));
             }
             if next_to_check.is_empty() {
                 break;
@@ -160,50 +183,87 @@ impl Racetrack {
             .copied()
             .expect("end tile does not have a cost")
     }
+    pub fn handle_cheat_with_complete_recalculation(
+        &self,
+        coords: (Coord2D, Coord2D),
+        wall: Coord2D,
+        picosecond_with_cheats: &mut HashMap<usize, u32>,
+        base_visited: HashMap<Coord2D, usize>,
+    ) {
+        // Old implementation
+        let picoseconds = self.find_shortest_path_with_cheat(
+            wall,
+            vec![
+                (coords.0, base_visited.get(&coords.0).copied().unwrap()),
+                (coords.1, base_visited.get(&coords.1).copied().unwrap()),
+            ],
+            base_visited.clone(),
+        );
+        *picosecond_with_cheats.entry(picoseconds).or_insert(0_u32) += 1;
+    }
+
+    pub fn handle_cheat_with_relative_cost_calculation(
+        &self,
+        coords: (Coord2D, Coord2D),
+        picoseconds_no_cheats: usize,
+        picosecond_with_cheats: &mut HashMap<usize, u32>,
+        base_visited: HashMap<Coord2D, usize>,
+        cost_map: &mut HashMap<Coord2D, usize>,
+    ) {
+        let mut handle_init_point = |init_point: Coord2D| -> usize {
+            *cost_map.entry(init_point).or_insert_with(|| {
+                let visited = self.find_shortest_path_with_dynamic_programming(init_point);
+                *visited.get(&self.end).unwrap()
+            })
+        };
+        let cost_to_north = base_visited.get(&coords.0).copied().unwrap();
+        let cost_to_south = base_visited.get(&coords.1).copied().unwrap();
+        let cost_from_north = handle_init_point(coords.0);
+        let cost_from_south = handle_init_point(coords.1);
+        let shortest_cheat = min(
+            cost_to_north + 2 + cost_from_south,
+            cost_to_south + 2 + cost_from_north,
+        );
+        if shortest_cheat <= picoseconds_no_cheats {
+            *picosecond_with_cheats
+                .entry(shortest_cheat)
+                .or_insert(0_u32) += 1;
+        }
+    }
 
     pub fn try_all_cheat_combinations_2ps_cheat(
         &self,
         base_visited: HashMap<Coord2D, usize>,
+        cost_map: &mut HashMap<Coord2D, usize>,
     ) -> HashMap<usize, u32> {
         let walls_snapshot = self.walls.borrow().clone();
+        let picoseconds_no_cheats = base_visited.get(&self.end).copied().unwrap();
         let mut picosecond_with_cheats = HashMap::new();
         for wall in &walls_snapshot {
             if wall.x > 0 && wall.x < self.x_dim - 1 {
                 let north = Coord2D::new(wall.x - 1, wall.y);
                 let south = Coord2D::new(wall.x + 1, wall.y);
-                if !walls_snapshot.contains(&north)
-                    && !walls_snapshot.contains(&south)
-                    && base_visited.contains_key(&north)
-                    && base_visited.contains_key(&south)
-                {
-                    let picoseconds = self.find_shortest_path_with_cheat(
-                        *wall,
-                        vec![
-                            (north, *base_visited.get(&north).unwrap()),
-                            (south, *base_visited.get(&south).unwrap()),
-                        ],
+                if !walls_snapshot.contains(&north) && !walls_snapshot.contains(&south) {
+                    self.handle_cheat_with_relative_cost_calculation(
+                        (north, south),
+                        picoseconds_no_cheats,
+                        &mut picosecond_with_cheats,
                         base_visited.clone(),
+                        cost_map,
                     );
-                    *picosecond_with_cheats.entry(picoseconds).or_insert(0_u32) += 1;
                 }
             }
             if wall.y > 0 && wall.y < self.y_dim - 1 {
                 let west = Coord2D::new(wall.x, wall.y - 1);
                 let east = Coord2D::new(wall.x, wall.y + 1);
-                if !walls_snapshot.contains(&east)
-                    && !walls_snapshot.contains(&west)
-                    && base_visited.contains_key(&west)
-                    && base_visited.contains_key(&east)
-                {
-                    let picoseconds = self.find_shortest_path_with_cheat(
-                        *wall,
-                        vec![
-                            (west, *base_visited.get(&west).unwrap()),
-                            (east, *base_visited.get(&east).unwrap()),
-                        ],
+                if !walls_snapshot.contains(&west) && !walls_snapshot.contains(&east) {
+                    self.handle_cheat_with_relative_cost_calculation(
+                        (west, east),
+                        picoseconds_no_cheats,
+                        &mut picosecond_with_cheats,
                         base_visited.clone(),
+                        cost_map,
                     );
-                    *picosecond_with_cheats.entry(picoseconds).or_insert(0_u32) += 1;
                 }
             }
             if DEBUG {
@@ -213,6 +273,7 @@ impl Racetrack {
         picosecond_with_cheats
     }
 
+    /*
     pub fn try_all_cheat_combinations_20ps_cheat(
         &self,
         base_visited: HashMap<Coord2D, usize>,
@@ -222,9 +283,17 @@ impl Racetrack {
         // TODO: How to even find the cheats? If it is a thin wall, I guess that is the simple
         // case. If it is a thick wall, there might be a lot of combinations.. I guess we have to
         // try all the shortest ones? How to find all of them reliably?
+
+        // TODO: Just brute-force all cheats with 20ps of wallhacks and keep a map or all the
+        // the best cheats given the same start and end point. Once we have a complete cost map,
+        // the lookups of saving should become fast. For brute-forcing the cheats, we could just
+        // use a simpler algorithm like BFS which traverses the walls and checks for exits which
+        // are not the start and smaller than 20. We just have to keep the shortest paths from a
+        // given start point to all other end points in the range of 20.
         for wall in &walls_snapshot {}
         picosecond_with_cheats
     }
+    */
 
     fn find_shortest_path_with_cheat(
         &self,
@@ -247,7 +316,8 @@ impl Racetrack {
         visited: &mut HashMap<Coord2D, usize>,
         cost: usize,
         coord: Coord2D,
-    ) -> Vec<(Coord2D, usize)> {
+        last_dir: Option<Direction>,
+    ) -> Vec<(Coord2D, usize, Direction)> {
         let mut next_coords = Vec::new();
         // Early stop condition if a path to the end was already found. Not fully sure whether it
         // helps that much, but it is not expensive either.
@@ -256,39 +326,42 @@ impl Racetrack {
                 return next_coords;
             }
         }
-        let mut handle_next_step = |next_coord: Coord2D| {
-            if !self.walls.borrow().contains(&next_coord) {
-                match visited.entry(next_coord) {
-                    std::collections::hash_map::Entry::Occupied(occupied_entry) => {
-                        let new_cost_is_cheaper = cost + 1 < *occupied_entry.get();
-                        if new_cost_is_cheaper {
-                            *occupied_entry.into_mut() = cost + 1;
-                            next_coords.push((next_coord, cost + 1));
-                        }
+        let mut handle_next_step = |next_coord: Coord2D, dir: Direction| {
+            if self.walls.borrow().contains(&next_coord) {
+                return;
+            }
+            match visited.entry(next_coord) {
+                std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+                    let new_cost_is_cheaper = cost + 1 < *occupied_entry.get();
+                    if new_cost_is_cheaper {
+                        *occupied_entry.into_mut() = cost + 1;
+                        next_coords.push((next_coord, cost + 1, dir));
                     }
-                    std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                        vacant_entry.insert(cost + 1);
-                        next_coords.push((next_coord, cost + 1));
-                    }
+                }
+                std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(cost + 1);
+                    next_coords.push((next_coord, cost + 1, dir));
                 }
             }
         };
+
         // Handle south and east first, because that is where we need to go.
-        if coord.x < self.x_dim - 1 {
+        if (last_dir.is_none() || last_dir.unwrap() != Direction::Left) && coord.x < self.x_dim - 1
+        {
             let east_coord = Coord2D::new(coord.x + 1, coord.y);
-            handle_next_step(east_coord);
+            handle_next_step(east_coord, Direction::Right);
         }
-        if coord.y < self.y_dim - 1 {
+        if (last_dir.is_none() || last_dir.unwrap() != Direction::Up) && coord.y < self.y_dim - 1 {
             let south_coord = Coord2D::new(coord.x, coord.y + 1);
-            handle_next_step(south_coord);
+            handle_next_step(south_coord, Direction::Down);
         }
-        if coord.x > 0 {
+        if (last_dir.is_none() || last_dir.unwrap() != Direction::Right) && coord.x > 0 {
             let west_coord = Coord2D::new(coord.x - 1, coord.y);
-            handle_next_step(west_coord);
+            handle_next_step(west_coord, Direction::Left);
         }
-        if coord.y > 0 {
+        if (last_dir.is_none() || last_dir.unwrap() != Direction::Down) && coord.y > 0 {
             let north_coord = Coord2D::new(coord.x, coord.y - 1);
-            handle_next_step(north_coord);
+            handle_next_step(north_coord, Direction::Up);
         }
         next_coords
     }
@@ -394,9 +467,12 @@ fn main() {
     if DEBUG {
         println!("Racetrack: {:?}", racetrack);
     }
-    let visited = racetrack.find_shortest_path_with_dynamic_programming();
+    let visited = racetrack.find_shortest_path_with_dynamic_programming(racetrack.start);
+    let mut cost_map = HashMap::new();
     let picoseconds_no_cheats = visited.get(&racetrack.end).copied().unwrap();
-    let picosecond_with_cheats = racetrack.try_all_cheat_combinations_2ps_cheat(visited);
+    cost_map.insert(racetrack.start, picoseconds_no_cheats);
+    let picosecond_with_cheats =
+        racetrack.try_all_cheat_combinations_2ps_cheat(visited, &mut cost_map);
     let saved_times: HashMap<usize, u32> = picosecond_with_cheats
         .iter()
         .filter(|(picoseconds, _)| **picoseconds < picoseconds_no_cheats)
@@ -423,9 +499,12 @@ mod tests {
     fn test_example() {
         let input_file = std::fs::read("example.txt").unwrap();
         let racetrack = Racetrack::new_from_data(&input_file);
-        let visited = racetrack.find_shortest_path_with_dynamic_programming();
+        let mut cost_map = HashMap::new();
+        let visited = racetrack.find_shortest_path_with_dynamic_programming(racetrack.start);
         let picoseconds_no_cheats = visited.get(&racetrack.end).copied().unwrap();
-        let picosecond_with_cheats = racetrack.try_all_cheat_combinations_2ps_cheat(visited);
+        cost_map.insert(racetrack.start, picoseconds_no_cheats);
+        let picosecond_with_cheats =
+            racetrack.try_all_cheat_combinations_2ps_cheat(visited, &mut cost_map);
         let saved_times: HashMap<usize, u32> = picosecond_with_cheats
             .iter()
             .filter(|(picoseconds, _)| **picoseconds < picoseconds_no_cheats)
@@ -435,6 +514,7 @@ mod tests {
         assert_eq!(racetrack.y_dim, 13);
         assert_eq!(racetrack.start, Coord2D::new(2, 0));
         assert_eq!(racetrack.end, Coord2D::new(6, 4));
+        println!("saved times: {:?}", saved_times);
         assert_eq!(*saved_times.get(&64).unwrap(), 1);
         assert_eq!(*saved_times.get(&40).unwrap(), 1);
         assert_eq!(*saved_times.get(&38).unwrap(), 1);
